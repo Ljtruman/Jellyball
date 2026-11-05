@@ -12,4 +12,5 @@ class OneStreamScraper(HtmlAggregatorProvider):
             os.getenv("AGGREGATOR_10_URL", "https://1stream.ws"),
             [],
             ["/match/", "/stream/", "/live/"],
+            series_sections={"f1": ["/f1streams"]},
         )

@@ -28,6 +28,7 @@ from stream_extractor import (
     playwright_page,
 )
 from sports_matcher import get_team_search_terms, match_team
+from motorsport_terms import series_for_terms
 
 
 API_VERSION = 1
@@ -132,6 +133,12 @@ class Provider:
 
     name = "Base"
     categories: List[str] = []
+    # Index pages scanned only when searching for a motorsport series, by
+    # series key (motorsport_terms.SERIES_TERMS), e.g. {"f1": ["/f1-streams"]}.
+    # Relative to base_url, or absolute for a section on another host. A
+    # series search scans the home page plus these instead of `categories`;
+    # team searches never fetch them.
+    series_sections: Dict[str, List[str]] = {}
 
     def __init__(self) -> None:
         self._default_base_url = ""
@@ -159,6 +166,29 @@ class Provider:
                 urls.append(url)
         return urls
 
+    def get_series_scan_urls(self, series_key: str) -> List[str]:
+        """Absolute URLs of this provider's sections for one series."""
+        if not self.base_url:
+            return []
+        base_url = self.base_url.rstrip("/") + "/"
+        urls: List[str] = []
+        for section in self.series_sections.get(series_key, []):
+            section = str(section)
+            # Relative sections keep base_url's path, like get_scan_urls().
+            url = urllib.parse.urljoin(base_url, section if "://" in section else section.lstrip("/"))
+            if url not in urls:
+                urls.append(url)
+        return urls
+
+    def scan_urls_for(self, search_terms: List[str]) -> List[str]:
+        """The index pages to scan for one search: get_scan_urls() for a team,
+        the home page plus the series' sections for a motorsport series."""
+        series_key = series_for_terms(search_terms)
+        if series_key is None:
+            return self.get_scan_urls()
+        urls = [self.base_url.rstrip("/")] if self.base_url else []
+        return urls + [url for url in self.get_series_scan_urls(series_key) if url not in urls]
+
     async def search(
         self,
         query_or_terms,
@@ -172,12 +202,20 @@ class Provider:
 class HtmlAggregatorProvider(Provider):
     """Configurable adapter for aggregators that expose linked event pages."""
 
-    def __init__(self, name: str, base_url: str, categories: Optional[List[str]] = None, event_path_hints: Optional[List[str]] = None):
+    def __init__(
+        self,
+        name: str,
+        base_url: str,
+        categories: Optional[List[str]] = None,
+        event_path_hints: Optional[List[str]] = None,
+        series_sections: Optional[Dict[str, List[str]]] = None,
+    ):
         super().__init__()
         self.name = name.strip() or "Aggregator"
         self._default_base_url = (base_url or "").strip().rstrip("/")
         self.categories = list(categories or [])
         self.event_path_hints = tuple(hint.lower() for hint in (event_path_hints or []) if hint)
+        self.series_sections = {key: list(paths) for key, paths in (series_sections or {}).items()}
 
     @staticmethod
     def _anchor_context(anchor) -> str:
@@ -197,8 +235,10 @@ class HtmlAggregatorProvider(Provider):
         candidate = urllib.parse.urljoin(page_url, href)
         if not _validate_upstream_url(candidate):
             return False
-        base_host = urllib.parse.urlparse(self.base_url).netloc.lower()
-        if urllib.parse.urlparse(candidate).netloc.lower() != base_host:
+        # Events live on the provider's host, or on the host of the page that
+        # lists them (a series section can sit on a sister domain).
+        hosts = {urllib.parse.urlparse(self.base_url).netloc.lower(), urllib.parse.urlparse(page_url).netloc.lower()}
+        if urllib.parse.urlparse(candidate).netloc.lower() not in hosts:
             return False
         if candidate.rstrip("/") == page_url.rstrip("/"):
             return False
@@ -339,7 +379,7 @@ class HtmlAggregatorProvider(Provider):
                 return
             await asyncio.to_thread(parse_matches, page_html, page_url, search_terms, matches, seen_matches)
 
-        for page_url in self.get_scan_urls():
+        for page_url in self.scan_urls_for(search_terms):
             if catch_page_errors:
                 try:
                     await process(page_url)

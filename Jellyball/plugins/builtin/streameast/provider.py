@@ -12,4 +12,6 @@ class StreamEastScraper(HtmlAggregatorProvider):
             os.getenv("AGGREGATOR_4_URL", "https://thestreameast.top"),
             [],
             ["/stream/", "/match/", "/live/"],
+            # The F1 section is on a sister domain linked from the home page.
+            series_sections={"f1": ["https://streameast.cool/f1streams4"]},
         )

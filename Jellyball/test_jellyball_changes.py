@@ -382,7 +382,8 @@ class JellyballChangesTests(unittest.TestCase):
             FootybiteScraper: (
                 "https://footybite.im",
                 [],
-                ["/watch/", "/stream/", "/live/", "/match/"],
+                # /game/: its event pages (seen on its F1 section, 2026).
+                ["/watch/", "/stream/", "/live/", "/match/", "/game/"],
             ),
             OneStreamScraper: (
                 "https://1stream.ws",

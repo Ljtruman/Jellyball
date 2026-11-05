@@ -11,5 +11,6 @@ class MethStreamsScraper(HtmlAggregatorProvider):
             "MethStreams",
             os.getenv("AGGREGATOR_3_URL", "https://methstreams.click"),
             [],
-            ["/game/", "/match/", "/live/"],
+            ["/game/", "/match/", "/live/", "/live-event/"],
+            series_sections={"f1": ["/formula1streams"]},
         )

@@ -404,7 +404,7 @@ EXPECTED_LINKS = {
     scrapers.MyBuffStreamsScraper: ("watch", "title", "cfb"),
     scrapers.MethStreamsScraper: ("game", "match", "live"),
     scrapers.StreamEastScraper: ("match", "live", "stream"),
-    scrapers.FootybiteScraper: ("watch", "match", "live", "stream"),
+    scrapers.FootybiteScraper: ("watch", "match", "live", "stream", "game"),
     scrapers.OneStreamScraper: ("match", "live", "stream"),
     scrapers.StreamedSuScraper: ("watch", "live"),
     scrapers.TopStreamsScraper: ("watch", "match", "live"),
