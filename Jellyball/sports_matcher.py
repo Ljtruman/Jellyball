@@ -8,6 +8,7 @@ import re
 from typing import List, Tuple, Set, Dict, Optional
 
 from sports_catalog import STATIC_TEAM_RECORDS, normalize_team_label
+from motorsport_terms import fold, has_series_conflict
 
 try:
     from thefuzz import fuzz
@@ -277,7 +278,8 @@ _NOISE_PATTERNS = [
 
 def clean_sports_text(text: str) -> str:
     """Removes live match metadata noise, timestamps, and quarter info."""
-    clean = text.lower()
+    # Fold accents first, or the a-z0-9 filter below splits "são" into "s o".
+    clean = fold(text)
     for pattern in _NOISE_PATTERNS:
         clean = re.sub(pattern, ' ', clean, flags=re.IGNORECASE)
     # Replace non-alphanumeric with spaces except keep vs, @, -
@@ -572,6 +574,13 @@ def match_team(
         all_targets.append(slug_text)
     if clean_title:
         all_targets.append(clean_title)
+
+    # Series searches (Formula 1): reject the whole event when any of its text
+    # names another series or another round. Checked once over everything,
+    # since one split side ("formula 1 2026") would hide the round named on
+    # the other ("las vegas gp").
+    if has_series_conflict(search_terms, " | ".join(all_targets)):
+        return False, 0, ""
 
     best_score = 0
     best_term = ""
