@@ -9,11 +9,11 @@ from typing import List, Optional, Set
 import httpx
 from playwright.async_api import Browser
 
-from config import _log_failure
+from config import _log_failure, _upstream_media_headers
 import provider_telemetry as telemetry
 from stream_extractor import DEFAULT_USER_AGENT, make_soup, playwright_page
 from sports_matcher import clean_sports_text, get_team_search_terms
-from plugins.sdk import HtmlAggregatorProvider
+from plugins.sdk import HtmlAggregatorProvider, StreamDict
 
 from scrapers import (
     _channel_term_matches,
@@ -22,6 +22,52 @@ from scrapers import (
     _verify_provider_streams,
     MAX_PROVIDER_EVENTS,
 )
+
+
+# How long, after nudging the player, to wait for its playlist response.
+PLAYLIST_WAIT_SECONDS = 15.0
+
+
+def _is_player_playlist_response(resource_type: str, status: int, url: str) -> bool:
+    """The player's own playlist fetch. The page also requests the playlist URL
+    as an image (a beacon/decoy answered 204 or 403) before the player's
+    tokenised XHR; capturing that one gives a URL that never verifies."""
+    return resource_type != "image" and status == 200 and _is_playlist_request_url(url)
+
+
+def _playlist_origin(origin_header: str, referer: str) -> str:
+    """The Origin to replay the playlist with: the one the player sent, else
+    the Referer's origin (the playlist host rejects requests without it)."""
+    if origin_header:
+        return origin_header
+    parsed = urllib.parse.urlsplit(referer or "")
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return ""
+
+
+# The player's playlist URLs: https://<edge-host>/<channel-slug>/index.m3u8?t=<token>.
+_PLAYLIST_PATH_RE = re.compile(r"^/(premium\d+)/[^/]+\.m3u8$")
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{8,256}$")
+
+
+def _playlist_token_request(playlist_url: str) -> Optional[tuple[str, dict]]:
+    """The player's token API call for a captured playlist URL: (url, params),
+    or None when the URL isn't a DaddyLive player playlist."""
+    parts = urllib.parse.urlsplit(playlist_url or "")
+    match = _PLAYLIST_PATH_RE.match(parts.path)
+    if parts.scheme != "https" or not parts.netloc or not match:
+        return None
+    return f"https://{parts.netloc}/api/playlist-token", {"slug": match.group(1)}
+
+
+def _with_playlist_token(playlist_url: str, token: str) -> str:
+    """The playlist URL with its `t` token replaced (and the player's
+    cache-buster dropped)."""
+    parts = urllib.parse.urlsplit(playlist_url)
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True) if k not in ("t", "_")]
+    query.insert(0, ("t", token))
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
 
 
 class DaddyLiveScraper(HtmlAggregatorProvider):
@@ -103,28 +149,42 @@ class DaddyLiveScraper(HtmlAggregatorProvider):
 
         try:
             async with playwright_page(browser, user_agent=DEFAULT_USER_AGENT) as page:
-                def on_request(request) -> None:
-                    if not _is_playlist_request_url(request.url):
-                        return
-                    url = request.url
+                pending: List[asyncio.Future] = []
+
+                async def record(response) -> None:
+                    request = response.request
+                    url = response.url
                     if any(s["url"] == url for s in streams):
                         return
                     try:
                         frame_url = request.frame.url if request.frame else ""
                     except Exception:
                         frame_url = ""
-                    referer = request.headers.get("referer") or frame_url or watch_url
+                    try:
+                        # request.headers leaves out Origin; all_headers() has it.
+                        headers = await request.all_headers()
+                    except Exception:
+                        headers = dict(request.headers)
+                    referer = headers.get("referer") or frame_url or watch_url
                     streams.append({
                         "url": url,
                         "provider": self.name,
                         "match_score": score,
                         "match_title": match_title,
                         "referer": referer,
-                        "origin": request.headers.get("origin", ""),
+                        "origin": _playlist_origin(headers.get("origin", ""), referer),
                         "discovery_method": "playwright",
                     })
 
-                page.on("request", on_request)
+                def on_response(response) -> None:
+                    try:
+                        resource_type = response.request.resource_type
+                    except Exception:
+                        resource_type = ""
+                    if _is_player_playlist_response(resource_type, response.status, response.url):
+                        pending.append(asyncio.ensure_future(record(response)))
+
+                page.on("response", on_response)
                 try:
                     await page.goto(watch_url, wait_until="domcontentloaded", timeout=30000)
                 except Exception as exc:
@@ -141,12 +201,41 @@ class DaddyLiveScraper(HtmlAggregatorProvider):
                     await page.mouse.click(400, 300)
                 except Exception:
                     pass
-                await asyncio.sleep(5)
+                # The player fetches a playlist token before its playlist, so
+                # wait until one has been captured rather than a fixed time.
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + PLAYLIST_WAIT_SECONDS
+                while not streams and loop.time() < deadline:
+                    await asyncio.sleep(0.5)
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
         except Exception as exc:
             _log_failure("DaddyLive player extraction", exc)
 
         seen = set()
         return [s for s in streams if s["url"] not in seen and not seen.add(s["url"])]
+
+    async def refresh_stream(self, stream: StreamDict, *, http_client: httpx.AsyncClient) -> Optional[StreamDict]:
+        """The player's playlist token lasts about a minute, and the player
+        renews it from the edge host's token API; do the same, rather than
+        driving a browser through the whole watch page again."""
+        url = str(stream.get("url") or "")
+        request = _playlist_token_request(url)
+        if request is None:
+            return None
+        token_url, params = request
+        headers = _upstream_media_headers(str(stream.get("referer") or ""), str(stream.get("origin") or ""))
+        try:
+            response = await http_client.get(token_url, params=params, headers=headers, timeout=8.0)
+            token = response.json().get("token") if response.status_code == 200 else None
+        except Exception as exc:
+            _log_failure("DaddyLive playlist token refresh", exc)
+            return None
+        if not isinstance(token, str) or not _TOKEN_RE.match(token):
+            return None
+        return {"url": _with_playlist_token(url, token)}
 
     async def search(self, query_or_terms, browser: Optional[Browser] = None, http_client: Optional[httpx.AsyncClient] = None) -> List[dict]:
         if not browser or not browser.is_connected():

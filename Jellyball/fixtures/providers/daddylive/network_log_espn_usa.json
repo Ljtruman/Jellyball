@@ -1,5 +1,5 @@
 {
-  "comment": "Hand-authored: the requests seen across the main frame and its nested player frame while the ESPN USA watch page plays.",
+  "comment": "Hand-authored: the requests (and response statuses) seen across the main frame and its nested player frame while the ESPN USA watch page plays, including an image-type beacon for the playlist and a refused playlist fetch, neither of which may be captured.",
   "page_url": "https://dlhd.example.test/watch.php?id=44",
   "requests": [
     {
@@ -16,6 +16,19 @@
       "url": "https://cdn.example.test/assets/jwplayer.js",
       "frame_url": "https://player-host.example.test/stream/stream-44.php",
       "headers": {"referer": "https://player-host.example.test/stream/stream-44.php"}
+    },
+    {
+      "url": "https://edge.example.test/hls/espn-usa/index.m3u8?beacon=fixture",
+      "frame_url": "https://player-host.example.test/stream/stream-44.php",
+      "resource_type": "image",
+      "status": 204,
+      "headers": {"referer": "https://player-host.example.test/"}
+    },
+    {
+      "url": "https://edge.example.test/hls/espn-usa/index.m3u8?stale=fixture",
+      "frame_url": "https://player-host.example.test/stream/stream-44.php",
+      "status": 403,
+      "headers": {"referer": "https://player-host.example.test/"}
     },
     {
       "url": "https://edge.example.test/hls/espn-usa/index.m3u8?hmac=fixture",
