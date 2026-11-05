@@ -36,7 +36,6 @@ import dashboard_cards
 import epg
 import provider_telemetry
 from catalog import _season_resume_label, get_catalog_entries
-from leagues import LEAGUES
 from alerts import (
     get_jellyfin_config,
     get_notification_config,
@@ -134,15 +133,11 @@ async def dashboard(request: Request, tab: str = "channels", status: str = "", a
 
     provider_health = await asyncio.to_thread(provider_telemetry.leaderboard_sync)
 
-    catalog_group_defs = (
-        *((league.key, league.group_title) for league in LEAGUES),
-        ("special", "Always-Live Sports Channels"),
-    )
     catalog_groups = []
-    for group_key, group_label in catalog_group_defs:
+    for group_key, group_label in catalog.CATALOG_GROUP_DEFS:
         group_entries = [
             entry for entry in catalog_entries
-            if ("special" if entry["content_type"] == "channel" else entry["category"]) == group_key
+            if catalog.catalog_group_key(entry) == group_key
         ]
         if not group_entries:
             continue

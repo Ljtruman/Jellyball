@@ -113,6 +113,7 @@ class Series:
         every qualifying; the round goes in the episode title.
     group_title: M3U group-title and dashboard catalog section.
     session_kinds: known session codes, in weekend order.
+    logo_url: channel logo (Jellyfin fetches it, so a public URL).
     default_session_duration: length of a session whose code is not listed."""
 
     key: str
@@ -122,6 +123,7 @@ class Series:
     short_name: str
     group_title: str
     session_kinds: Tuple[SessionKind, ...]
+    logo_url: str = ""
     default_session_duration: timedelta = timedelta(hours=1)
 
     def session_label(self, code: str) -> str:
@@ -149,6 +151,7 @@ F1 = Series(
         ("Qual", "Qualifying", timedelta(hours=1)),
         ("Race", "Race", timedelta(hours=2)),
     ),
+    logo_url="https://a.espncdn.com/i/teamlogos/leagues/500/f1.png",
 )
 
 SERIES: Tuple[Series, ...] = (F1,)

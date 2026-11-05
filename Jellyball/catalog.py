@@ -14,7 +14,8 @@ import httpx
 
 from config import _log_failure, _safe_team_id, LOGGER
 import state
-from leagues import CATALOG_CATEGORIES, COLLEGE_CATEGORIES, LEAGUES
+from leagues import CATALOG_CATEGORIES, COLLEGE_CATEGORIES, LEAGUES, SERIES, SERIES_BY_KEY, Series
+from motorsport_terms import series_search_terms
 from network_safety import bounded_float, safe_get
 from sports_catalog import (
     ESPN_DIRECTORY_ENDPOINTS,
@@ -293,7 +294,13 @@ def _channel_tvg_id(team_id: str, data: dict) -> str:
 
 def _channel_group_title(data: dict) -> str:
     special_channel = _special_channel_for(data)
-    return str(data.get("group_title") or (special_channel.group_title if special_channel else "") or _CATEGORY_GROUP_LABELS.get(data.get("category"), "Team Trackers"))
+    series = SERIES_BY_KEY.get(str(data.get("category") or ""))
+    return str(
+        data.get("group_title")
+        or (special_channel.group_title if special_channel else "")
+        or (series.group_title if series else "")
+        or _CATEGORY_GROUP_LABELS.get(data.get("category"), "Team Trackers")
+    )
 
 
 def _channel_logo_url(data: dict) -> str:
@@ -345,13 +352,51 @@ def _special_catalog_entry(channel) -> dict:
     }
 
 
+def _series_catalog_entry(series: Series) -> dict:
+    """A motorsport series channel: follows every session of every round.
+    Its stored search terms are the series' names; the scrape loop adds the
+    current round's (failover._channel_search_terms)."""
+    return {
+        "catalog_key": f"series:{series.key}",
+        "team_id": _safe_team_id(f"series_{series.key}"),
+        "name": series.name,
+        "query": series.name,
+        "category": series.key,
+        "source_id": "",
+        "content_type": "series",
+        "search_terms": series_search_terms(series.key),
+        "always_live": False,
+        "logo_url": series.logo_url,
+        "group_title": series.group_title,
+    }
+
+
 async def get_catalog_entries() -> List[dict]:
     grouped = await get_team_catalog()
     entries: List[dict] = []
     for category in CATALOG_CATEGORIES:
         entries.extend(_team_catalog_entry(category, record) for record in grouped.get(category, ()))
+    entries.extend(_series_catalog_entry(series) for series in SERIES)
     entries.extend(_special_catalog_entry(channel) for channel in SPECIAL_CHANNELS)
     return entries
+
+
+# Sections of the dashboard and setup-wizard catalog pickers, in order: one per
+# league, the motorsport series, then the always-live channels.
+CATALOG_GROUP_DEFS: Tuple[Tuple[str, str], ...] = (
+    *((league.key, league.group_title) for league in LEAGUES),
+    ("motorsport", "Motorsport"),
+    ("special", "Always-Live Sports Channels"),
+)
+
+
+def catalog_group_key(entry: dict) -> str:
+    """The CATALOG_GROUP_DEFS section a catalog entry is listed under."""
+    if entry.get("content_type") == "channel":
+        return "special"
+    if entry.get("content_type") == "series":
+        return "motorsport"
+    return str(entry.get("category") or "")
 
 
 _ESPN_LOGO_CDN = "https://a.espncdn.com/i/teamlogos"

@@ -221,7 +221,8 @@ class CatalogOrderTests(unittest.TestCase):
                 patch.object(state, "SHARED_HTTP_CLIENT", None):
             entries = asyncio.run(catalog.get_catalog_entries())
         categories = [entry["category"] for entry in entries]
-        self.assertEqual(tuple(dict.fromkeys(categories)), CATEGORY_ORDER + ("special",))
+        # Leagues, then the motorsport series (leagues.SERIES), then specials.
+        self.assertEqual(tuple(dict.fromkeys(categories)), CATEGORY_ORDER + ("f1", "special"))
         # Specials come last, after every team entry.
         self.assertEqual(categories[-len(sports_catalog.SPECIAL_CHANNELS):], ["special"] * len(sports_catalog.SPECIAL_CHANNELS))
         # Only the college directories are fetched from ESPN, football first.
