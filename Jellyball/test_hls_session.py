@@ -7,6 +7,7 @@ MPEG-TS blobs built by hand (just enough structure for TsNormalizer to parse
 them: PAT + PMT + one video PES with PTS/DTS, optionally one audio PES).
 """
 import asyncio
+import gzip
 import os
 import sys
 import time
@@ -795,6 +796,23 @@ class ChannelSessionTests(unittest.IsolatedAsyncioTestCase):
         await session._poll_once()
         await session._poll_once()
         self.assertEqual(self.harness.failures[-1][2], "playlist forbidden")
+
+    async def test_png_packed_segments_are_published_as_ts(self):
+        from test_segment_unwrap import pack_png
+
+        base = "http://upstream"
+        self.harness.source = SourceSpec(key=("primary",), url=f"{base}/media.m3u8", label="primary")
+        self.harness.set_playlist(f"{base}/media.m3u8", playlist_text(base, list(range(3))))
+        for u in range(3):
+            self.harness.set_response(f"{base}/seg{u}.ts", pack_png(gzip.compress(make_ts_segment(pts=90000 + u * 900000))))
+        session = self.make_session(fast_config())
+        await session._poll_once()
+        self.assertEqual(len(session.window), 3)
+        self.assertEqual(self.harness.incompatibles, [])
+        # Published as clean TS, not the image (which can pass a sync-byte sniff).
+        for segment in session.window:
+            self.assertFalse(segment.data.startswith(b"\x89PNG"))
+            self.assertTrue(all(segment.data[i] == 0x47 for i in range(0, len(segment.data), 188)))
 
     async def test_fmp4_source_after_segments_reports_incompatible(self):
         base = "http://upstream"
