@@ -521,6 +521,10 @@ SELF_RETRY_LIMIT = bounded_int(os.getenv("SELF_RETRY_LIMIT", "2"), 2, 0, 10)
 SELF_RETRY_WINDOW = _positive_env_number("SELF_RETRY_WINDOW", 120.0)
 FAILOVER_ALERT_COOLDOWN = _positive_env_number("FAILOVER_ALERT_COOLDOWN", 300.0)
 TOKEN_REFRESH_COOLDOWN = _positive_env_number("TOKEN_REFRESH_COOLDOWN", 120.0)
+# A provider-renewed stream that is forbidden again sooner than this didn't
+# take; fall back to the rescrape instead of renewing it in a loop.
+STREAM_RENEW_MIN_INTERVAL = _positive_env_number("STREAM_RENEW_MIN_INTERVAL", 20.0)
+STREAM_RENEW_TIMEOUT = 10.0
 # Failover candidate tiers: known-good within this long; failed longer ago than
 # FAILED_RETRY_AFTER is worth another try.
 CANDIDATE_GOOD_FOR_SECONDS = _positive_env_number("CANDIDATE_GOOD_FOR_SECONDS", 180.0)
@@ -636,6 +640,12 @@ async def _request_failover_unlocked(
         return False
 
     active = candidates[active_index]
+    if reason == "playlist forbidden" and await _renew_stream(active):
+        # Same source, fresh token: the session picks the new URL up on its
+        # next poll and carries on without a source switch.
+        LOGGER.info("Renewed stream token team=%s provider=%s", team_id, active.get("provider", "Unknown"))
+        SESSIONS.poke(team_id)
+        return False
     active["last_health_ok"] = False
     active["last_health_check"] = time.time()
     if reason != "playlist forbidden":
@@ -726,6 +736,53 @@ def _send_failover_alert(team_id: str, data: dict, team_name: str, new_provider:
         send_alert("⚠️ Stream Failover", f"Failed over to {new_provider} for **{team_name}**.{extra}", "warning"),
         f"send failover alert team={team_id}",
     )
+
+
+def _provider_named(name: str):
+    for provider in scrapers.ACTIVE_PROVIDERS:
+        if getattr(provider, "name", None) == name:
+            return provider
+    return None
+
+
+async def _renew_stream(candidate: dict) -> bool:
+    """Ask the candidate's provider to renew its expired playlist token in
+    place (Provider.refresh_stream), which is much cheaper than a rescrape.
+    True when the candidate now has a fresh URL for the same source."""
+    provider = _provider_named(str(candidate.get("provider") or ""))
+    if provider is None or not hasattr(provider, "refresh_stream"):
+        return False
+    now = time.monotonic()
+    last = candidate.get("last_stream_renewal")
+    if last is not None and now - float(last) < STREAM_RENEW_MIN_INTERVAL:
+        return False
+    candidate["last_stream_renewal"] = now
+    owns_client = state.SHARED_HTTP_CLIENT is None
+    client = state.SHARED_HTTP_CLIENT or httpx.AsyncClient(timeout=STREAM_RENEW_TIMEOUT, follow_redirects=True)
+    try:
+        renewed = await asyncio.wait_for(
+            provider.refresh_stream(dict(candidate), http_client=client), STREAM_RENEW_TIMEOUT,
+        )
+    except Exception as exc:
+        _log_failure(f"stream renewal provider={candidate.get('provider')}", exc)
+        return False
+    finally:
+        if owns_client:
+            await client.aclose()
+    if not isinstance(renewed, dict):
+        return False
+    url = renewed.get("url")
+    if not isinstance(url, str) or url == candidate.get("url"):
+        return False
+    if candidate_source_key({**candidate, "url": url}) != candidate_source_key(candidate):
+        LOGGER.warning("Ignoring renewed stream for a different source provider=%s", candidate.get("provider"))
+        return False
+    for field in ("url", "referer", "origin"):
+        value = renewed.get(field)
+        if isinstance(value, str) and value:
+            candidate[field] = value
+    candidate["last_health_ok"] = True
+    return True
 
 
 def _request_token_refresh(team_id: str, data: dict) -> bool:

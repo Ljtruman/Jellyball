@@ -17,7 +17,11 @@ logged and shown on the dashboard's Providers card.
   `False` for a provider that only lists 24/7 linear channels so team channels
   never search it), and
   `async search(query_or_terms, *, browser=None, http_client=None)` returning
-  a list of `StreamDict`.
+  a list of `StreamDict`. Optionally
+  `async refresh_stream(stream, *, http_client)`: when a playing stream's
+  playlist answers 401/403 (an expired URL token), return the fields to update
+  (usually a new `url` for the same source) and playback continues without a
+  rescrape; return `None` (the default) and the channel is rescraped as before.
 - `class HtmlAggregatorProvider(Provider)`: the shared logic for aggregators
   that expose linked event pages (`_fetch_html` with Playwright fallback,
   `_is_event_link`, `_parse_anchors`, and the full search pipeline).

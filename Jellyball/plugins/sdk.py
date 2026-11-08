@@ -274,6 +274,21 @@ class Provider:
     ) -> List[StreamDict]:
         return []
 
+    async def refresh_stream(
+        self,
+        stream: StreamDict,
+        *,
+        http_client: httpx.AsyncClient,
+    ) -> Optional[StreamDict]:
+        """Renew a playing stream whose playlist URL token expired (the
+        playlist answered 401/403), without a full rescrape.
+
+        Return the fields to update (usually just ``url``; the result must
+        point at the same source, so only the query string or token-like path
+        segments may change), or None when the provider can't renew it, in
+        which case the engine rescrapes the channel. The default can't."""
+        return None
+
 
 class _MatchedEvent(tuple):
     """A (match_url, score, match_title) event tuple that can also carry the

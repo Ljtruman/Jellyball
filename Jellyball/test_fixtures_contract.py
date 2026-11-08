@@ -654,8 +654,19 @@ class ScriptedRequest:
     def __init__(self, entry):
         self.url = entry["url"]
         self.headers = entry.get("headers", {})
+        self.resource_type = entry.get("resource_type", "fetch")
         frame_url = entry.get("frame_url")
         self.frame = type("Frame", (), {"url": frame_url})() if frame_url else None
+
+    async def all_headers(self):
+        return dict(self.headers)
+
+
+class ScriptedResponse:
+    def __init__(self, entry):
+        self.request = ScriptedRequest(entry)
+        self.url = entry["url"]
+        self.status = entry.get("status", 200)
 
 
 class ScriptedMouse:
@@ -671,13 +682,14 @@ class ScriptedPage(FakePage):
     """FakePage plus the slice of Playwright's Page API the providers use.
 
     content() serves stored HTML; navigating to a URL replays its stored network
-    log to the "request" listeners. Scripted, so it shows nothing about a real site.
+    log to the "request" and "response" listeners. Scripted, so it shows nothing
+    about a real site.
     """
 
     def __init__(self, documents, network_logs):
         super().__init__()
         self.documents, self.network_logs = documents, network_logs
-        self.visited, self.listeners = [], []
+        self.visited, self.listeners, self.response_listeners = [], [], []
         self.url = ""
         self.frames = [ScriptedFrame(), ScriptedFrame()]
         self.mouse = ScriptedMouse()
@@ -685,6 +697,8 @@ class ScriptedPage(FakePage):
     def on(self, event, handler):
         if event == "request":
             self.listeners.append(handler)
+        elif event == "response":
+            self.response_listeners.append(handler)
 
     async def goto(self, url, **kwargs):
         self.url = url
@@ -692,6 +706,8 @@ class ScriptedPage(FakePage):
         for entry in self.network_logs.get(url, []):
             for listener in self.listeners:
                 listener(ScriptedRequest(entry))
+            for listener in self.response_listeners:
+                listener(ScriptedResponse(entry))
 
     async def wait_for_load_state(self, *args, **kwargs):
         return None
@@ -832,7 +848,8 @@ class DaddyLiveContractTests(OfflineCase):
             [(s["url"], s["referer"], s["origin"]) for s in results],
             [
                 ("https://edge.example.test/hls/espn-usa/index.m3u8?hmac=fixture", "https://player-host.example.test/", "https://player-host.example.test"),
-                ("https://edge.example.test/manifest/espn-usa-backup", "https://player-host.example.test/stream/stream-44.php", ""),
+                # No Origin sent: the Referer's origin is replayed (the host requires one).
+                ("https://edge.example.test/manifest/espn-usa-backup", "https://player-host.example.test/stream/stream-44.php", "https://player-host.example.test"),
             ],
         )
         self.assertEqual({(s["provider"], s["match_title"], s["discovery_method"]) for s in results}, {("DaddyLive", "ESPN USA", "playwright")})
