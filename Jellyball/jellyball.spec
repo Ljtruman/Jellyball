@@ -149,6 +149,7 @@ hiddenimports = [
     "network_safety",
     "hls_session",
     "ts_normalize",
+    "segment_unwrap",
     "version",
     "main",
     # Modules split out of main.py (T6). main imports them statically; listed so the

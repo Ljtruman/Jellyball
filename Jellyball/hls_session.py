@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Deque, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+from segment_unwrap import PNG_SIGNATURE, unwrap_image_segment
 from ts_normalize import TsNormalizer, find_ts_start
 import engine_stats
 
@@ -1130,6 +1131,10 @@ class ChannelSession:
                 data = await task
                 if self.source is None:
                     return
+                if data is not None and data.startswith(PNG_SIGNATURE):
+                    # A segment packed inside a real image; plain TS behind a
+                    # fake image header is handled by find_ts_start below.
+                    data = await asyncio.to_thread(unwrap_image_segment, data) or data
                 if data is not None and find_ts_start(data) < 0:
                     # One odd segment (an HTML error page served as 200, an
                     # ID3-only ad slate) is skipped like a failed download; only
