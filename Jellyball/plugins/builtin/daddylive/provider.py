@@ -10,6 +10,7 @@ import httpx
 from playwright.async_api import Browser
 
 from config import _log_failure, _upstream_media_headers, LOGGER
+from network_safety import safe_get
 import provider_telemetry as telemetry
 import stream_language
 from stream_extractor import DEFAULT_USER_AGENT, make_soup, playwright_page
@@ -223,21 +224,25 @@ class DaddyLiveScraper(HtmlAggregatorProvider):
         return [s for s in streams if s["url"] not in seen and not seen.add(s["url"])]
 
     async def refresh_stream(self, stream: StreamDict, *, http_client: httpx.AsyncClient) -> Optional[StreamDict]:
-        """The player's playlist token lasts about a minute, and the player
-        renews it from the edge host's token API; do the same, rather than
-        driving a browser through the whole watch page again."""
+        """The player's playlist token lasts about two minutes, and the player
+        renews it from the edge host's token API; make the same request,
+        rather than driving a browser through the whole watch page again."""
         url = str(stream.get("url") or "")
         request = _playlist_token_request(url)
         if request is None:
             return None
         token_url, params = request
         headers = _upstream_media_headers(str(stream.get("referer") or ""), str(stream.get("origin") or ""))
-        try:
-            response = await http_client.get(token_url, params=params, headers=headers, timeout=8.0)
-            token = response.json().get("token") if response.status_code == 200 else None
-        except Exception as exc:
-            _log_failure("DaddyLive playlist token refresh", exc)
+        # safe_get: the edge host comes from a scraped page, so every hop is
+        # checked against private/loopback addresses like other fetches.
+        response = await safe_get(http_client, token_url, params=params, headers=headers, timeout=8.0)
+        if response is None or response.status_code != 200:
             return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        token = body.get("token") if isinstance(body, dict) else None
         if not isinstance(token, str) or not _TOKEN_RE.match(token):
             return None
         return {"url": _with_playlist_token(url, token)}

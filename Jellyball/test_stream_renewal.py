@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import socket
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -20,8 +21,10 @@ from plugins.builtin.daddylive.provider import (
     _playlist_token_request,
     _with_playlist_token,
 )
+from network_safety import clear_dns_cache
 from plugins.sdk import Provider
 from test_failover_recovery import StateMixin, _candidate
+from test_fixtures_contract import _public_getaddrinfo
 
 PLAYLIST = "https://edge.example.test/premium44/index.m3u8?t=1700000000.oldtoken&_=1700000000000"
 
@@ -73,6 +76,15 @@ def _client(handler) -> httpx.AsyncClient:
 
 
 class RefreshStreamTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # The token API goes through safe_get: resolve hosts to a public
+        # address so the SSRF check doesn't depend on network access.
+        clear_dns_cache()
+        patcher = patch.object(socket, "getaddrinfo", side_effect=_public_getaddrinfo)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(clear_dns_cache)
+
     stream = {"url": PLAYLIST, "provider": "DaddyLive", "referer": "https://player.example.test/", "origin": "https://player.example.test"}
 
     async def test_renews_the_token_with_the_players_headers(self):
@@ -95,10 +107,23 @@ class RefreshStreamTests(unittest.IsolatedAsyncioTestCase):
             httpx.Response(200, text="<html>not json</html>"),
             httpx.Response(200, text=json.dumps({"token": "bad token with spaces"})),
             httpx.Response(200, text=json.dumps({"ttl": 120})),
+            httpx.Response(200, text=json.dumps(["not", "an", "object"])),
         ]
         for response in responses:
             async with _client(lambda request, r=response: r) as client:
                 self.assertIsNone(await DaddyLiveScraper().refresh_stream(self.stream, http_client=client))
+
+    async def test_token_api_is_not_followed_onto_a_private_address(self):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            return httpx.Response(302, headers={"location": "http://127.0.0.1:8096/api/playlist-token"})
+
+        # Like the shared client, which follows redirects.
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True) as client:
+            self.assertIsNone(await DaddyLiveScraper().refresh_stream(self.stream, http_client=client))
+        self.assertEqual(seen, ["https://edge.example.test/api/playlist-token?slug=premium44"])
 
     async def test_nothing_for_a_non_player_url(self):
         def handler(request):
